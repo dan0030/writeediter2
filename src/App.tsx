@@ -65,6 +65,7 @@ import {
 import { ColorField, ColorPanel, FieldLabel, RangeField, UploadButton } from './fields'
 import { PageContent, contentStyle, textSizeFor } from './PostcardPage'
 import { paginate } from './paginate'
+import { buildFontEmbedCSS } from './fontEmbed'
 import { idbGet, idbSet, readLocal, writeLocal } from './storage'
 
 type Tab = 'writing' | 'background' | 'layout'
@@ -76,6 +77,7 @@ type Snapshot = {
   selectedFontSize: string
   formatColor: string
   highlightColor: string
+  caret: number | null
 }
 type StoredFont = { name: string; value: string; source: string }
 
@@ -94,8 +96,71 @@ const ALIGNS: [BodyAlign, ReactElement, string][] = [
 
 const HISTORY_LIMIT = 150
 const COALESCE_MS = 900
+const GROUP_MAX_MS = 3000
+
+// 본문 안 캐럿 위치를 글자 수로 기록·복원합니다(실행 취소 후에도 이어서 쓸 수 있도록).
+function caretOffset(editor: HTMLElement, range: Range | null) {
+  if (!range || !editor.contains(range.endContainer)) return null
+  const before = document.createRange()
+  before.selectNodeContents(editor)
+  before.setEnd(range.endContainer, range.endOffset)
+  return before.toString().length
+}
+
+function placeCaret(editor: HTMLElement, offset: number | null) {
+  const selection = window.getSelection()
+  if (!selection) return
+  const range = document.createRange()
+  let remaining = offset ?? Number.MAX_SAFE_INTEGER
+  const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT)
+  let node = walker.nextNode() as Text | null
+  let placed = false
+  while (node) {
+    if (remaining <= node.data.length) {
+      range.setStart(node, remaining)
+      placed = true
+      break
+    }
+    remaining -= node.data.length
+    node = walker.nextNode() as Text | null
+  }
+  if (!placed) {
+    range.selectNodeContents(editor)
+    range.collapse(false)
+  }
+  range.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
 
 const keepSelection = (e: ReactMouseEvent) => e.preventDefault()
+
+const JUSTIFY_COMMANDS: Record<BodyAlign, string> = {
+  left: 'justifyLeft',
+  center: 'justifyCenter',
+  right: 'justifyRight',
+  justify: 'justifyFull',
+}
+
+function readAlign(el: HTMLElement): BodyAlign | null {
+  const raw = (el.style.textAlign || el.getAttribute('align') || '').toLowerCase()
+  if (raw === 'left' || raw === 'start') return 'left'
+  if (raw === 'right' || raw === 'end') return 'right'
+  if (raw === 'center') return 'center'
+  if (raw === 'justify') return 'justify'
+  return null
+}
+
+// 본문 전체 정렬과 다르게, 문단에 따로 지정된 정렬이 있으면 돌려줍니다.
+function explicitAlignAt(editor: HTMLElement, node: Node | null): BodyAlign | null {
+  let el: HTMLElement | null = node instanceof HTMLElement ? node : (node?.parentElement ?? null)
+  while (el && el !== editor) {
+    const align = readAlign(el)
+    if (align) return align
+    el = el.parentElement
+  }
+  return null
+}
 
 function dataUrlToBytes(dataUrl: string) {
   const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
@@ -120,6 +185,14 @@ function loadDraft(): Draft {
   const saved = readLocal<Partial<Draft>>(STORAGE_KEY)
   if (!saved) return DEFAULT_DRAFT
   const merged = { ...DEFAULT_DRAFT, ...saved }
+  // 이전 버전에서 저장된 글꼴 값(대체 글꼴이 cursive라 궁서체로 보이던 값 등)을 새 목록의 값으로 바꿉니다.
+  const firstFamily = (value: string) => value.split(',')[0].trim().replace(/"/g, '').toLowerCase()
+  if (!merged.globalFont.startsWith('"Custom-')) {
+    const match = FONTS.find((f) => firstFamily(f.value) === firstFamily(merged.globalFont))
+    merged.globalFont = match ? match.value : merged.globalFont.replace(/\bcursive\b/g, 'sans-serif')
+  }
+  merged.content = merged.content.replace(/((?:face="|font-family:)[^">]*?)\bcursive\b/g, '$1sans-serif')
+  if (!Number.isFinite(merged.pageStart) || merged.pageStart < 0) merged.pageStart = 1
   if (!['left', 'center', 'right', 'justify'].includes(merged.bodyAlign)) merged.bodyAlign = 'left'
   if (!['cover', 'page', 'image'].includes(merged.layout)) merged.layout = 'cover'
   return merged
@@ -139,7 +212,7 @@ export default function App() {
   const [backgroundImage, setBackgroundImage] = useState('')
   const [contentImage, setContentImage] = useState('')
   const [customFonts, setCustomFonts] = useState<FontOption[]>([])
-  const [selectedFont, setSelectedFont] = useState(FONTS[0].value)
+  const [selectedFont, setSelectedFont] = useState(draft.globalFont)
   const [selectedFontSize, setSelectedFontSize] = useState('30')
   const [formatColor, setFormatColor] = useState('#272621')
   const [highlightColor, setHighlightColor] = useState('#fff0a8')
@@ -152,6 +225,7 @@ export default function App() {
   const [colorPanel, setColorPanel] = useState<null | 'text' | 'highlight'>(null)
   const [presets, setPresets] = useState<ColorPresets>(loadPresets)
   const [formatState, setFormatState] = useState({ bold: false, italic: false, strike: false })
+  const [paragraphAlign, setParagraphAlign] = useState<BodyAlign | null>(null)
   const [mobileView, setMobileView] = useState<'edit' | 'preview'>('edit')
   const [exportMenu, setExportMenu] = useState(false)
   const [fontsVersion, setFontsVersion] = useState(0)
@@ -168,13 +242,13 @@ export default function App() {
   const draftRef = useRef<Draft>(draft)
   const backgroundRef = useRef('')
   const contentImageRef = useRef('')
-  const fontRef = useRef(FONTS[0].value)
+  const fontRef = useRef(draft.globalFont)
   const fontSizeRef = useRef('30')
   const formatColorRef = useRef('#272621')
   const highlightRef = useRef('#fff0a8')
   const undoStack = useRef<Snapshot[]>([])
   const redoStack = useRef<Snapshot[]>([])
-  const lastPush = useRef<{ key: string | null; time: number }>({ key: null, time: 0 })
+  const lastPush = useRef<{ key: string | null; time: number; start: number }>({ key: null, time: 0, start: 0 })
   const contentRef = useRef(draft.content)
 
   const fontOptions = useMemo(() => [...FONTS, ...customFonts], [customFonts])
@@ -317,6 +391,7 @@ export default function App() {
       selectedFontSize: fontSizeRef.current,
       formatColor: formatColorRef.current,
       highlightColor: highlightRef.current,
+      caret: editorRef.current ? caretOffset(editorRef.current, savedRange.current) : null,
     }),
     [],
   )
@@ -327,11 +402,13 @@ export default function App() {
     (key: string | null = null) => {
       const now = Date.now()
       // 같은 항목을 연달아 바꾸는 동안(타이핑, 슬라이더 드래그)은 하나의 변화로 묶습니다.
-      if (key && lastPush.current.key === key && now - lastPush.current.time < COALESCE_MS) {
-        lastPush.current.time = now
+      // 다만 너무 큰 덩어리가 되지 않도록 몇 초마다 끊어 줍니다.
+      const last = lastPush.current
+      if (key && last.key === key && now - last.time < COALESCE_MS && now - last.start < GROUP_MAX_MS) {
+        last.time = now
         return
       }
-      lastPush.current = { key, time: now }
+      lastPush.current = { key, time: now, start: now }
       undoStack.current.push(snapshot())
       if (undoStack.current.length > HISTORY_LIMIT) undoStack.current.shift()
       redoStack.current = []
@@ -361,7 +438,7 @@ export default function App() {
     highlightRef.current = s.highlightColor
     contentRef.current = s.draft.content
     savedRange.current = null
-    lastPush.current = { key: null, time: 0 }
+    lastPush.current = { key: null, time: 0, start: 0 }
     setDraft(s.draft)
     setBackgroundImage(s.backgroundImage)
     setContentImage(s.contentImage)
@@ -369,7 +446,17 @@ export default function App() {
     setSelectedFontSize(s.selectedFontSize)
     setFormatColor(s.formatColor)
     setHighlightColor(s.highlightColor)
-    setEditorVersion((v) => v + 1)
+    // 편집기를 다시 만들지 않고 내용만 바꿔서, 입력 중이던 포커스와 캐럿 위치를 지킵니다.
+    const editor = editorRef.current
+    if (editor) {
+      const focused = document.activeElement === editor
+      editor.innerHTML = s.draft.content
+      if (focused) {
+        placeCaret(editor, s.caret)
+        const selection = window.getSelection()
+        if (selection?.rangeCount) savedRange.current = selection.getRangeAt(0).cloneRange()
+      }
+    }
   }, [])
 
   const undo = useCallback(() => {
@@ -397,7 +484,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return
-      const key = e.key.toLowerCase()
+      // 한글 입력 상태에서는 e.key가 'ㅋ'·'ㅛ'로 들어오므로 물리 키(e.code)로 판단합니다.
+      const key = e.code === 'KeyZ' ? 'z' : e.code === 'KeyY' ? 'y' : e.key.toLowerCase()
       if (key === 'z') {
         e.preventDefault()
         if (e.shiftKey) redo()
@@ -426,6 +514,7 @@ export default function App() {
       const range = selection.getRangeAt(0)
       if (!editor.contains(range.commonAncestorContainer)) return
       savedRange.current = range.cloneRange()
+      setParagraphAlign(explicitAlignAt(editor, range.startContainer))
       try {
         setFormatState({
           bold: document.queryCommandState('bold'),
@@ -528,6 +617,43 @@ export default function App() {
       }
       exec('hiliteColor', color)
     }
+  }
+
+  const applyParagraphAlign = (align: BodyAlign) => {
+    const editor = editorRef.current
+    if (!editor) return
+    editor.focus({ preventScroll: true })
+    restoreSelection()
+    // 브라우저는 이미 같은 정렬로 보이는 문단에는 아무것도 하지 않으므로,
+    // 잠시 편집기 기본 정렬을 다른 값으로 바꿔 두어 문단에 정렬이 확실히 기록되게 합니다.
+    const original = editor.style.textAlign
+    editor.style.textAlign = align === 'center' ? 'left' : 'center'
+    document.execCommand(JUSTIFY_COMMANDS[align], false)
+    editor.style.textAlign = original
+    const selection = window.getSelection()
+    if (selection?.rangeCount) {
+      savedRange.current = selection.getRangeAt(0).cloneRange()
+      setParagraphAlign(explicitAlignAt(editor, selection.getRangeAt(0).startContainer))
+    }
+    commitEditor()
+  }
+
+  const clearParagraphAlign = () => {
+    const editor = editorRef.current
+    if (!editor) return
+    editor.focus({ preventScroll: true })
+    restoreSelection()
+    const selection = window.getSelection()
+    if (!selection?.rangeCount) return
+    const range = selection.getRangeAt(0)
+    editor.querySelectorAll<HTMLElement>('[style*="text-align"], [align]').forEach((el) => {
+      if (!range.intersectsNode(el)) return
+      el.style.removeProperty('text-align')
+      el.removeAttribute('align')
+      if (!el.getAttribute('style')) el.removeAttribute('style')
+    })
+    setParagraphAlign(null)
+    commitEditor()
   }
 
   const savePreset = (kind: 'text' | 'highlight', color: string) => {
@@ -662,14 +788,14 @@ export default function App() {
     draftRef.current = DEFAULT_DRAFT
     backgroundRef.current = ''
     contentImageRef.current = ''
-    fontRef.current = FONTS[0].value
+    fontRef.current = DEFAULT_DRAFT.globalFont
     fontSizeRef.current = '30'
     contentRef.current = DEFAULT_DRAFT.content
     savedRange.current = null
     setDraft(DEFAULT_DRAFT)
     setBackgroundImage('')
     setContentImage('')
-    setSelectedFont(FONTS[0].value)
+    setSelectedFont(DEFAULT_DRAFT.globalFont)
     setSelectedFontSize('30')
     setEditorVersion((v) => v + 1)
     setColorPanel(null)
@@ -683,10 +809,14 @@ export default function App() {
   const renderPages = async (indices: number[]) => {
     await document.fonts.ready
     const { toPng } = await import('html-to-image')
-    const fontEmbedCSS = customFonts
-      .filter((f) => f.custom && f.source)
-      .map((f) => `@font-face{font-family:${f.value};src:url("${f.source}");font-style:normal;font-weight:100 900;}`)
-      .join('\n')
+    const nodes = indices.map((i) => pageRefs.current[i]).filter((n): n is HTMLDivElement => !!n)
+    const webFontCSS = await buildFontEmbedCSS(nodes)
+    const fontEmbedCSS = [
+      webFontCSS,
+      ...customFonts
+        .filter((f) => f.custom && f.source)
+        .map((f) => `@font-face{font-family:${f.value};src:url("${f.source}");font-style:normal;font-weight:100 900;}`),
+    ].join('\n')
     const results: { name: string; dataUrl: string }[] = []
     for (const index of indices) {
       const node = pageRefs.current[index]
@@ -917,10 +1047,26 @@ export default function App() {
                       placeholder="01"
                     />
                   </label>
-                  <label className="check-row">
-                    <input type="checkbox" checked={draft.autoPageNumber} onChange={(e) => update('autoPageNumber', e.target.checked)} />
-                    <span>꼬리글 오른쪽에 쪽 번호(01, 02…)를 자동으로 넣기</span>
-                  </label>
+                  <div className="check-row">
+                    <label>
+                      <input type="checkbox" checked={draft.autoPageNumber} onChange={(e) => update('autoPageNumber', e.target.checked)} />
+                      <span>꼬리글 오른쪽에 쪽 번호 자동으로 넣기</span>
+                    </label>
+                    {draft.autoPageNumber ? (
+                      <label className="page-start">
+                        <span>시작 번호</span>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          min={0}
+                          max={999}
+                          value={draft.pageStart}
+                          onChange={(e) => update('pageStart', Math.max(0, Math.min(999, Math.round(Number(e.target.value) || 0))))}
+                          aria-label="쪽 번호 시작 번호"
+                        />
+                      </label>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div>
@@ -973,6 +1119,35 @@ export default function App() {
                       {formatButton('서식 지우기', <Eraser size={17} />, () => exec('removeFormat'))}
                       {formatButton('페이지 나누기 (Ctrl+Enter)', <SeparatorHorizontal size={17} />, insertPageBreak)}
                     </div>
+                    <div className="paragraph-align" role="group" aria-label="선택한 문단 정렬">
+                      <span>문단 정렬</span>
+                      <div className="segmented icon-segmented">
+                        <button
+                          type="button"
+                          className={paragraphAlign === null ? 'active' : ''}
+                          title="본문 전체 정렬을 따름"
+                          aria-pressed={paragraphAlign === null}
+                          onMouseDown={keepSelection}
+                          onClick={clearParagraphAlign}
+                        >
+                          기본
+                        </button>
+                        {ALIGNS.map(([value, icon, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            className={paragraphAlign === value ? 'active' : ''}
+                            title={`선택한 문단만 ${label} 정렬`}
+                            aria-label={`선택한 문단만 ${label} 정렬`}
+                            aria-pressed={paragraphAlign === value}
+                            onMouseDown={keepSelection}
+                            onClick={() => applyParagraphAlign(value)}
+                          >
+                            {icon}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                   {colorPanel ? (
                     <ColorPanel
@@ -1014,7 +1189,7 @@ export default function App() {
 
                 <div className="inline-controls">
                   <div className="align-control">
-                    <FieldLabel>본문 정렬</FieldLabel>
+                    <FieldLabel>본문 전체 정렬</FieldLabel>
                     <div className="segmented icon-segmented">
                       {ALIGNS.map(([value, icon, label]) => (
                         <button

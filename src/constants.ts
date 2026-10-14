@@ -12,6 +12,7 @@ export type Draft = {
   footerLeft: string
   footerRight: string
   autoPageNumber: boolean
+  pageStart: number
   globalFont: string
   content: string
   backgroundKind: BackgroundKind
@@ -46,31 +47,53 @@ export const PRESET_KEY = 'sentence-postcard-studio-color-presets'
 export const PAGE_WIDTH = 1200
 export const PAGE_HEIGHT = 1600
 
-export const DUMMY_CONTENT = [
-  '로렘 입숨 돌로르 싯 아멧, 콘섹테투르 아디피싱 엘리트.',
-  '세드 두 에이우스모드 템포르 인시디둔트',
-  '우트 라보레 엣 돌로레 마그나 알리콰.',
+export const SAMPLE_CONTENT = [
+  '끝나고 나서야 비로소 시작되는 것이 있다.',
   '',
-  '우트 에님 아드 미님 베니암, 퀴스 노스트루드',
-  '엑세르치타티온 울람코 라보리스 니시 우트.',
+  '인간이고 싶지 않았던 少女와',
+  '차마 전능하지 못했던 神.',
+  '',
+  '지금 뻗은 손이 네 구원이 될 수 없다는 것도',
+  '우리의 목적지가 낙원일지 지옥일지 알 수 없다는 것도',
+  '전부 괜찮으니까.',
+  '',
+  '우리는 오늘도 來日을 약속하자.',
 ].join('<br>')
+
+// 손글씨 계열 등에 `cursive`를 마지막 대체 글꼴로 두면 Windows에서 궁서체로 바뀌어 보이므로,
+// 모든 글꼴을 웹폰트로 불러오고 대체 글꼴은 일반 serif/sans-serif로 둡니다.
+export const FONTS: FontOption[] = [
+  { name: '차분한 명조', value: '"Noto Serif KR", "Nanum Myeongjo", serif' },
+  { name: '나눔 명조', value: '"Nanum Myeongjo", "Noto Serif KR", serif' },
+  { name: '단정한 바탕', value: '"Gowun Batang", "Noto Serif KR", serif' },
+  { name: '깔끔한 고딕', value: '"Pretendard Variable", Pretendard, "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif' },
+  { name: '본고딕', value: '"Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif' },
+  { name: '부드러운 돋움', value: '"Gowun Dodum", "Noto Sans KR", sans-serif' },
+  { name: '손글씨 계열', value: '"Nanum Pen Script", "Noto Sans KR", sans-serif' },
+  { name: '동글한 손글씨', value: 'Gaegu, "Noto Sans KR", sans-serif' },
+  { name: '붓글씨 계열', value: '"Nanum Brush Script", "Noto Sans KR", sans-serif' },
+  { name: '클래식 바탕', value: 'Batang, "Nanum Myeongjo", "Noto Serif KR", serif' },
+  { name: '궁서 계열', value: 'Gungsuh, GungSeo, "Song Myung", serif' },
+  { name: '타자기 계열', value: '"Nanum Gothic Coding", D2Coding, ui-monospace, monospace' },
+]
 
 export const DEFAULT_DRAFT: Draft = {
   layout: 'cover',
-  title: '로렘 입숨 돌로르',
+  title: '輪廻',
   icon: '✦',
-  kicker: 'SHORT NOTE',
-  headerText: '01',
-  footerLeft: 'a little note',
-  footerRight: '01',
+  kicker: '사라지는 것의 永遠',
+  headerText: 'MNM',
+  footerLeft: '지워진 이름 너머의 누군가',
+  footerRight: '03',
   autoPageNumber: true,
-  globalFont: '"Noto Serif KR", "Nanum Myeongjo", Batang, serif',
-  content: DUMMY_CONTENT,
-  backgroundKind: 'solid',
+  pageStart: 3,
+  globalFont: FONTS[5].value,
+  content: SAMPLE_CONTENT,
+  backgroundKind: 'gradient',
   backgroundColor: '#f3efe6',
-  gradientFrom: '#eee7dc',
-  gradientTo: '#d9e1dc',
-  gradientAngle: 145,
+  gradientFrom: '#efeee3',
+  gradientTo: '#dcdde2',
+  gradientAngle: 160,
   textColor: '#272621',
   backgroundBlur: 5,
   backgroundSaturation: 80,
@@ -84,23 +107,6 @@ export const DEFAULT_DRAFT: Draft = {
   lineHeight: 1.9,
   bodySize: 30,
 }
-
-export const FONTS: FontOption[] = [
-  { name: '차분한 명조', value: '"Noto Serif KR", "Nanum Myeongjo", Batang, serif' },
-  { name: '단정한 바탕', value: '"Gowun Batang", "Iropke Batang", Batang, serif' },
-  {
-    name: '깔끔한 고딕',
-    value: '"Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif',
-  },
-  {
-    name: '부드러운 돋움',
-    value: '"Gowun Dodum", "Nanum Gothic", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif',
-  },
-  { name: '손글씨 계열', value: '"Nanum Pen Script", "Nanum Brush Script", "Segoe Print", cursive' },
-  { name: '클래식 바탕', value: 'Batang, "Times New Roman", serif' },
-  { name: '궁서 계열', value: 'Gungsuh, "Noto Serif KR", serif' },
-  { name: '타자기 계열', value: '"D2Coding", "Nanum Gothic Coding", ui-monospace, monospace' },
-]
 
 export const INLINE_SIZES = [18, 20, 22, 26, 30, 34, 40, 48, 58, 72]
 export const BODY_SIZES = [22, 24, 26, 28, 30, 32, 34, 36, 40]

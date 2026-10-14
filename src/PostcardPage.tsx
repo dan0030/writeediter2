@@ -41,7 +41,7 @@ export function PageContent({ draft, kind, html, pageNumber, contentImage, probe
   const footer = (
     <div className="postcard-footer">
       <span>{draft.footerLeft}</span>
-      <span>{draft.autoPageNumber ? pad2(pageNumber) : draft.footerRight}</span>
+      <span>{draft.autoPageNumber ? pad2(draft.pageStart + pageNumber - 1) : draft.footerRight}</span>
     </div>
   )
   const style = contentStyle(draft)
